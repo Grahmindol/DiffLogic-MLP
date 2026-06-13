@@ -1,7 +1,4 @@
 build
 **.tmp
 **.dat
-**.bin
-**.aag
-**.aig
 **.history
