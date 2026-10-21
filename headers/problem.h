@@ -21,7 +21,7 @@
 
 #define INIT_STEPS_PER_FRAME 256
 
-static const size_t layers[] = {INPUT_SIZE, 512, 512, 512, 512, 512, 512, OUTPUT_SIZE};
+static const size_t layers[] = {INPUT_SIZE, 512, 512, 512, 512, 512, 512, 512, OUTPUT_SIZE};
 static const size_t nb_layers = sizeof(layers) / sizeof(layers[0]);
 
 static uint8_t* train_images = NULL;

@@ -52,30 +52,22 @@ static void mlp_fill_random(MLP* net) {
   }
 }
 
-static size_t align_up(size_t x, size_t a) { return (x + a - 1) & ~(a - 1); }
-
-static size_t append(size_t* off, size_t align, size_t bytes) {
-  *off = align_up(*off, align);
-  size_t pos = *off;
-  *off += bytes;
-  return pos;
-}
-
 MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, double out_temp) {
   MLP net = {0};
 
-  if (nb_layers < 1) return net;
+  if (nb_layers < 1 || !sizes) return net;
 
   net.nb_layers = nb_layers;
   net.weights_temp = (weights_temp < 0.05) ? 0.05 : weights_temp;
   net.out_temp = (out_temp < 0.05) ? 0.05 : out_temp;
 
-  size_t act_count = 0;
-  size_t bias_count = 0;
-  size_t weight_count = 0;
-  size_t row_count = 0;
+  // 1. Calculate total elements needed for bulk allocations
+  size_t act_count = 0;     // Total activations across all layers
+  size_t bias_count = 0;    // Total biases (layers 1..nb_layers-1)
+  size_t weight_count = 0;  // Total weights (layers 1..nb_layers-1)
+  size_t row_count = 0;     // Total matrix rows (layers 1..nb_layers-1)
 
-  for (unsigned l = 0; l < nb_layers; ++l) {
+  for (size_t l = 0; l < nb_layers; ++l) {
     act_count += sizes[l];
     if (l > 0) {
       bias_count += sizes[l];
@@ -84,69 +76,68 @@ MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, doubl
     }
   }
 
-  size_t moff = 0;
-  size_t sizes_off = append(&moff, sizeof(size_t), nb_layers * sizeof(size_t));
-  size_t a_off = append(&moff, sizeof(double*), nb_layers * sizeof(double*));
-  size_t z_off = append(&moff, sizeof(double*), nb_layers * sizeof(double*));
-  size_t d_off = append(&moff, sizeof(double*), nb_layers * sizeof(double*));
-  size_t b_off = append(&moff, sizeof(double*), nb_layers * sizeof(double*));
-  size_t W_off = append(&moff, sizeof(double**), nb_layers * sizeof(double**));
-  size_t I_off = append(&moff, sizeof(int**), nb_layers * sizeof(int**));
+  // 2. Allocate layer metadata pointers (1 allocation per array)
+  net.sizes = malloc(nb_layers * sizeof(size_t));
+  net.a = malloc(nb_layers * sizeof(double*));
+  net.z = malloc(nb_layers * sizeof(double*));
+  net.delta = malloc(nb_layers * sizeof(double*));
+  net.b = malloc(nb_layers * sizeof(double*));
+  net.W = malloc(nb_layers * sizeof(double***));
+  net.I = malloc(nb_layers * sizeof(int***));
 
-  size_t Wrow_off = append(&moff, sizeof(double*), row_count * sizeof(double*));
-  size_t Irow_off = append(&moff, sizeof(int*), row_count * sizeof(int*));
+  // 3. Allocate matrix row pointers in bulk (1 allocation each)
+  double** W_rows = malloc(row_count * sizeof(double*));
+  int** I_rows = malloc(row_count * sizeof(int*));
 
-  net.meta_block = calloc(1, moff);
-  if (!net.meta_block) return (MLP){0};
+  // 4. Allocate continuous data blocks in bulk (1 allocation per type)
+  double* A_data = calloc(act_count, sizeof(double));
+  double* Z_data = calloc(act_count, sizeof(double));
+  double* D_data = calloc(act_count, sizeof(double));
+  double* B_data = calloc(bias_count, sizeof(double));
+  double* W_data = calloc(weight_count, sizeof(double));
+  int* I_data = calloc(weight_count, sizeof(int));
 
-  net.data_block = (double*)calloc(1, (3 * act_count + bias_count + weight_count) * sizeof(double));
-  if (!net.data_block) {
-    free(net.meta_block);
+  // Check allocation success
+  if (!net.sizes || !net.a || !net.z || !net.delta || !net.b || !net.W || !net.I || !W_rows ||
+      !I_rows || !A_data || !Z_data || !D_data || !B_data || !W_data || !I_data) {
+    // Cleanup everything on failure
+    free(net.sizes);
+    free(net.a);
+    free(net.z);
+    free(net.delta);
+    free(net.b);
+    free(net.W);
+    free(net.I);
+    free(W_rows);
+    free(I_rows);
+    free(A_data);
+    free(Z_data);
+    free(D_data);
+    free(B_data);
+    free(W_data);
+    free(I_data);
     return (MLP){0};
   }
 
-  net.idx_block = (int*)calloc(1, weight_count * sizeof(int));
-  if (!net.idx_block) {
-    free(net.meta_block);
-    free(net.data_block);
-    return (MLP){0};
-  }
-
-  unsigned char* m = (unsigned char*)net.meta_block;
-
-  net.sizes = (size_t*)(m + sizes_off);
-  net.a = (double**)(m + a_off);
-  net.z = (double**)(m + z_off);
-  net.delta = (double**)(m + d_off);
-  net.b = (double**)(m + b_off);
-  net.W = (double***)(m + W_off);
-  net.I = (int***)(m + I_off);
-
-  double** Wrows = (double**)(m + Wrow_off);
-  int** Irows = (int**)(m + Irow_off);
-
-  for (unsigned l = 0; l < nb_layers; ++l) {
+  // Copy layer sizes
+  for (size_t l = 0; l < nb_layers; ++l) {
     net.sizes[l] = sizes[l];
   }
 
-  double* A = net.data_block;
-  double* Z = A + act_count;
-  double* D = Z + act_count;
-  double* B = D + act_count;
-  double* Wv = B + bias_count;
+  // 5. Wire up pointer networks without allocating memory in the loops
+  size_t act_off = 0;
+  size_t bias_off = 0;
+  size_t weight_off = 0;
+  size_t row_off = 0;
 
-  int* Iv = net.idx_block;
+  for (size_t l = 0; l < nb_layers; ++l) {
+    size_t count = sizes[l];
 
-  size_t a_ofs = 0;
-  size_t b_ofs = 0;
-  size_t w_ofs = 0;
-  size_t r_ofs = 0;
-
-  for (unsigned l = 0; l < nb_layers; ++l) {
-    net.a[l] = A + a_ofs;
-    net.z[l] = Z + a_ofs;
-    net.delta[l] = D + a_ofs;
-    a_ofs += sizes[l];
+    // Assign 1D vector slices from the bulk buffers
+    net.a[l] = A_data + act_off;
+    net.z[l] = Z_data + act_off;
+    net.delta[l] = D_data + act_off;
+    act_off += count;
 
     if (l == 0) {
       net.b[l] = NULL;
@@ -155,19 +146,20 @@ MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, doubl
       continue;
     }
 
-    net.b[l] = B + b_ofs;
-    b_ofs += sizes[l];
+    net.b[l] = B_data + bias_off;
+    bias_off += count;
 
-    net.W[l] = Wrows + r_ofs;
-    net.I[l] = Irows + r_ofs;
+    // Assign 2D matrix row pointers
+    net.W[l] = W_rows + row_off;
+    net.I[l] = I_rows + row_off;
 
-    for (size_t j = 0; j < sizes[l]; ++j) {
-      net.W[l][j] = Wv + w_ofs + j * NB_ENTRY;
-      net.I[l][j] = Iv + w_ofs + j * NB_ENTRY;
+    for (size_t j = 0; j < count; ++j) {
+      net.W[l][j] = W_data + weight_off + j * NB_ENTRY;
+      net.I[l][j] = I_data + weight_off + j * NB_ENTRY;
     }
 
-    w_ofs += sizes[l] * NB_ENTRY;
-    r_ofs += sizes[l];
+    weight_off += count * NB_ENTRY;
+    row_off += count;
   }
 
   mlp_fill_random(&net);
@@ -396,68 +388,104 @@ static int neurone_truth_generator(void* p, int input) {
   }
   return z > 0;
 }
+#include <omp.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "aiger.h"
 
 void mlp_aiger_export(const MLP* net, enum aiger_mode mode, FILE* file) {
   aiger* res = aiger_init();
 
   size_t neuron_count = 0;
-  for (unsigned i = 0; i < net->nb_layers; i++) neuron_count += net->sizes[i];
+  for (unsigned i = 0; i < net->nb_layers; i++) {
+    neuron_count += net->sizes[i];
+  }
 
   unsigned** node = malloc(net->nb_layers * sizeof(unsigned*));
   node[0] = malloc(neuron_count * sizeof(unsigned));
-  for (unsigned i = 1; i < net->nb_layers; i++) node[i] = node[i - 1] + net->sizes[i - 1];
+  for (unsigned i = 1; i < net->nb_layers; i++) {
+    node[i] = node[i - 1] + net->sizes[i - 1];
+  }
 
   unsigned var_count = 1;
 
+  // Initialisation des entrées du réseau (séquentiel)
   for (size_t i = 0; i < net->sizes[0]; i++) {
     node[0][i] = aiger_var2lit(var_count++);
     aiger_add_input(res, node[0][i], NULL);
   }
 
-  struct neurone_truth_generator_data_t data;
-  data.temp = net->weights_temp;
+  // Traitement couche par couche (la dépendance entre couches impose un ordre séquentiel)
   for (unsigned l = 1; l < net->nb_layers; l++) {
-    for (unsigned i = 0; i < net->sizes[l]; i++) {
-      data.b = net->b[l][i];
-      data.w = net->W[l][i];
-      qm16_vec_t qm = {0};
-      qm16_generate(&qm, neurone_truth_generator, &data);
+// Parallélisation au niveau des neurones de la couche l
+#pragma omp parallel
+    {
+      struct neurone_truth_generator_data_t data;
+      data.temp = net->weights_temp;
 
-      node[l][i] = aiger_false;
-      for (size_t term_id = 0; term_id < qm.size; term_id++) {
-        uint32_t term = qm.data[term_id];
-        uint16_t mask = (uint16_t)term;
-        uint16_t value = (uint16_t)(term >> 16);
+#pragma omp for schedule(dynamic)
+      for (unsigned i = 0; i < net->sizes[l]; i++) {
+        data.b = net->b[l][i];
+        data.w = net->W[l][i];
 
-        unsigned imp = aiger_true;
-        for (int input_id = 0; input_id < NB_ENTRY; ++input_id) {
-          if (mask & (1u << input_id)) continue;
+        qm16_vec_t qm = {0};
+        // QM16 est thread-safe car data et qm sont locaux au thread
+        qm16_generate(&qm, neurone_truth_generator, &data);
 
-          unsigned lit = node[l - 1][net->I[l][i][input_id]];
-          if (!(value & (1u << input_id))) {
-            lit = aiger_not(lit);
+        unsigned current_node = aiger_false;
+
+        for (size_t term_id = 0; term_id < qm.size; term_id++) {
+          uint32_t term = qm.data[term_id];
+          uint16_t mask = (uint16_t)term;
+          uint16_t value = (uint16_t)(term >> 16);
+
+          unsigned imp = aiger_true;
+
+          for (int input_id = 0; input_id < NB_ENTRY; ++input_id) {
+            if (mask & (1u << input_id)) continue;
+
+            // Lecture sécurisée : la couche (l-1) est déjà entièrement calculée
+            unsigned lit = node[l - 1][net->I[l][i][input_id]];
+            if (!(value & (1u << input_id))) {
+              lit = aiger_not(lit);
+            }
+
+            if (imp == aiger_true) {
+              imp = lit;
+            } else {
+              // Section critique pour la création de variable et l'ajout de porte AIGER
+              unsigned new_imp;
+#pragma omp critical(aiger_mutation)
+              {
+                new_imp = aiger_var2lit(var_count++);
+                aiger_add_and(res, new_imp, imp, lit);
+              }
+              imp = new_imp;
+            }
           }
 
-          if (imp == aiger_true) {
-            imp = lit;
+          if (current_node == aiger_false) {
+            current_node = imp;
           } else {
-            unsigned new_imp = aiger_var2lit(var_count++);
-            aiger_add_and(res, new_imp, imp, lit);
-            imp = new_imp;
+            // Section critique pour l'assemblage des termes (De Morgan)
+            unsigned new_gate;
+#pragma omp critical(aiger_mutation)
+            {
+              new_gate = aiger_var2lit(var_count++);
+              aiger_add_and(res, new_gate, aiger_not(current_node), aiger_not(imp));
+            }
+            current_node = aiger_not(new_gate);
           }
         }
 
-        if (node[l][i] == aiger_false) {
-          node[l][i] = imp;
-        } else {
-          unsigned new_gate = aiger_var2lit(var_count++);
-          aiger_add_and(res, new_gate, aiger_not(node[l][i]), aiger_not(imp));
-          node[l][i] = aiger_not(new_gate);
-        }
+        // Affectation finale du résultat du neurone (i)
+        node[l][i] = current_node;
       }
     }
   }
 
+  // Déclaration des sorties (séquentiel)
   for (size_t i = 0; i < net->sizes[net->nb_layers - 1]; i++) {
     aiger_add_output(res, node[net->nb_layers - 1][i], NULL);
   }

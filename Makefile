@@ -2,7 +2,7 @@
 CXX := gcc
 
 
-DEBUG ?= 1
+DEBUG ?= 0
 
 ifeq ($(DEBUG),1)
 	CXXFLAGS := -g -O0
