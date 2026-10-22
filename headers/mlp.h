@@ -9,6 +9,7 @@
 #define NB_ENTRY 8
 
 typedef struct {
+  unsigned long long t;
   size_t nb_layers;
   size_t* sizes;
 

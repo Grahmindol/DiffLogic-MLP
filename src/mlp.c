@@ -270,6 +270,14 @@ double mlp_backward(MLP* net, const double* target, double lr) {
     }
   }
 
+  const int t = net->t + 1;
+  const double beta1 = 0.9;
+  const double beta2 = 0.999;
+  const double beta1_t = pow(beta1, t);
+  const double beta2_t = pow(beta2, t);
+  const double m_correction = 1.0 - beta1_t;
+  const double v_correction = 1.0 - beta2_t;
+
   // update ALL layers
   for (int l = 1; l <= last; ++l) {
 #pragma omp parallel for schedule(static)
@@ -283,12 +291,19 @@ double mlp_backward(MLP* net, const double* target, double lr) {
 
         double grad_l = grad_w * dweight_from_logit(net, net->W[l][j][k]);
 
-        net->W[l][j][k] -= lr * grad_l;
+        net->M[l][j][k] = beta1 * net->M[l][j][k] + (1.0 - beta1) * grad_l;
+        net->V[l][j][k] = beta2 * net->V[l][j][k] + (1.0 - beta2) * grad_l * grad_l;
+
+        const double m_hat = net->M[l][j][k] / m_correction;
+        const double v_hat = net->V[l][j][k] / v_correction;  // Fixed to beta2_t via v_correction
+
+        net->W[l][j][k] -= lr * m_hat / (sqrt(v_hat) + 1e-8);
       }
 
       net->b[l][j] -= lr * net->delta[l][j];
     }
   }
+  net->t++;
 
   return loss / (double)net->sizes[last];
 }
