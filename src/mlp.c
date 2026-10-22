@@ -77,45 +77,47 @@ MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, doubl
   }
 
   // 2. Allocate layer metadata pointers (1 allocation per array)
-  net.sizes = malloc(nb_layers * sizeof(size_t));
-  net.a = malloc(nb_layers * sizeof(double*));
-  net.z = malloc(nb_layers * sizeof(double*));
-  net.delta = malloc(nb_layers * sizeof(double*));
-  net.b = malloc(nb_layers * sizeof(double*));
-  net.W = malloc(nb_layers * sizeof(double***));
-  net.I = malloc(nb_layers * sizeof(int***));
+  net.sizes = calloc(nb_layers, sizeof(size_t));
+  net.a = calloc(nb_layers, sizeof(double*));
+  net.z = calloc(nb_layers, sizeof(double*));
+  net.delta = calloc(nb_layers, sizeof(double*));
+  net.b = calloc(nb_layers, sizeof(double*));
+  net.W = calloc(nb_layers, sizeof(double***));
+  net.M = calloc(nb_layers, sizeof(double***));
+  net.V = calloc(nb_layers, sizeof(double***));
+  net.I = calloc(nb_layers, sizeof(int***));
+
+  if (!net.sizes || !net.a || !net.z || !net.delta || !net.b || !net.W || !net.M || !net.V || !net.I) {
+    mlp_free(&net);
+    return (MLP){0};
+  }
 
   // 3. Allocate matrix row pointers in bulk (1 allocation each)
-  double** W_rows = malloc(row_count * sizeof(double*));
-  int** I_rows = malloc(row_count * sizeof(int*));
+  net.W[0] = calloc(row_count, sizeof(double*));
+  net.M[0] = calloc(row_count, sizeof(double*));
+  net.V[0] = calloc(row_count, sizeof(double*));
+  net.I[0] = calloc(row_count, sizeof(int*));
+
+  if (!net.W[0] || !net.M[0] || !net.V[0] || !net.I[0]) {
+    mlp_free(&net);
+    return (MLP){0};
+  }
 
   // 4. Allocate continuous data blocks in bulk (1 allocation per type)
-  double* A_data = calloc(act_count, sizeof(double));
-  double* Z_data = calloc(act_count, sizeof(double));
-  double* D_data = calloc(act_count, sizeof(double));
-  double* B_data = calloc(bias_count, sizeof(double));
-  double* W_data = calloc(weight_count, sizeof(double));
-  int* I_data = calloc(weight_count, sizeof(int));
+  net.a[0] = calloc(act_count, sizeof(double));
+  net.z[0] = calloc(act_count, sizeof(double));
+  net.delta[0] = calloc(act_count, sizeof(double));
+  net.b[0] = calloc(bias_count, sizeof(double));
+  net.W[0][0] = calloc(weight_count, sizeof(double));
+  net.M[0][0] = calloc(weight_count, sizeof(double));
+  net.V[0][0] = calloc(weight_count, sizeof(double));
+  net.I[0][0] = calloc(weight_count, sizeof(int));
 
   // Check allocation success
-  if (!net.sizes || !net.a || !net.z || !net.delta || !net.b || !net.W || !net.I || !W_rows ||
-      !I_rows || !A_data || !Z_data || !D_data || !B_data || !W_data || !I_data) {
+  if (!net.a[0] || !net.z[0] || !net.delta[0] || !net.b[0] || !net.W[0][0] || !net.M[0][0] ||
+      !net.V[0][0] || !net.I[0][0]) {
     // Cleanup everything on failure
-    free(net.sizes);
-    free(net.a);
-    free(net.z);
-    free(net.delta);
-    free(net.b);
-    free(net.W);
-    free(net.I);
-    free(W_rows);
-    free(I_rows);
-    free(A_data);
-    free(Z_data);
-    free(D_data);
-    free(B_data);
-    free(W_data);
-    free(I_data);
+    mlp_free(&net);
     return (MLP){0};
   }
 
@@ -125,37 +127,36 @@ MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, doubl
   }
 
   // 5. Wire up pointer networks without allocating memory in the loops
-  size_t act_off = 0;
+  size_t act_off = sizes[0];
   size_t bias_off = 0;
   size_t weight_off = 0;
   size_t row_off = 0;
 
-  for (size_t l = 0; l < nb_layers; ++l) {
+
+
+  for (size_t l = 1; l < nb_layers; ++l) {
     size_t count = sizes[l];
 
     // Assign 1D vector slices from the bulk buffers
-    net.a[l] = A_data + act_off;
-    net.z[l] = Z_data + act_off;
-    net.delta[l] = D_data + act_off;
+    net.a[l] = net.a[0] + act_off;
+    net.z[l] = net.z[0] + act_off;
+    net.delta[l] = net.delta[0] + act_off;
     act_off += count;
 
-    if (l == 0) {
-      net.b[l] = NULL;
-      net.W[l] = NULL;
-      net.I[l] = NULL;
-      continue;
-    }
-
-    net.b[l] = B_data + bias_off;
+    net.b[l] = net.b[0] + bias_off;
     bias_off += count;
 
     // Assign 2D matrix row pointers
-    net.W[l] = W_rows + row_off;
-    net.I[l] = I_rows + row_off;
+    net.W[l] = net.W[0] + row_off;
+    net.M[l] = net.M[0] + row_off;
+    net.V[l] = net.V[0] + row_off;
+    net.I[l] = net.I[0] + row_off;
 
     for (size_t j = 0; j < count; ++j) {
-      net.W[l][j] = W_data + weight_off + j * NB_ENTRY;
-      net.I[l][j] = I_data + weight_off + j * NB_ENTRY;
+      net.W[l][j] = net.W[0][0] + weight_off + j * NB_ENTRY;
+      net.M[l][j] = net.M[0][0] + weight_off + j * NB_ENTRY;
+      net.V[l][j] = net.V[0][0] + weight_off + j * NB_ENTRY;
+      net.I[l][j] = net.I[0][0] + weight_off + j * NB_ENTRY;
     }
 
     weight_off += count * NB_ENTRY;
@@ -167,15 +168,43 @@ MLP mlp_create(size_t nb_layers, const size_t* sizes, double weights_temp, doubl
 }
 
 void mlp_randomize(MLP* net) {
-  if (!net || !net->meta_block) return;
+  if (!net) return;
   mlp_fill_random(net);
 }
 
 void mlp_free(MLP* net) {
   if (!net) return;
-  free(net->meta_block);
-  free(net->data_block);
-  free(net->idx_block);
+
+  if (net->sizes) free(net->sizes);
+
+  if (net->z && net->z[0]) free(net->z[0]);
+  if (net->z) free(net->z);
+
+  if (net->a && net->a[0]) free(net->a[0]);
+  if (net->a) free(net->a);
+
+  if (net->delta && net->delta[0]) free(net->delta[0]);
+  if (net->delta) free(net->delta);
+
+  if (net->b && net->b[0]) free(net->b[0]);
+  if (net->b) free(net->b);
+
+  if (net->W && net->W[0] && net->W[0][0]) free(net->W[0][0]);
+  if (net->W && net->W[0]) free(net->W[0]);
+  if (net->W) free(net->W);
+
+  if (net->M && net->M[0] && net->M[0][0]) free(net->M[0][0]);
+  if (net->M && net->M[0]) free(net->M[0]);
+  if (net->M) free(net->M);
+
+  if (net->V && net->V[0] && net->V[0][0]) free(net->V[0][0]);
+  if (net->V && net->V[0]) free(net->V[0]);
+  if (net->V) free(net->V);
+
+  if (net->I && net->I[0] && net->I[0][0]) free(net->I[0][0]);
+  if (net->I && net->I[0]) free(net->I[0]);
+  if (net->I) free(net->I);
+
   *net = (MLP){0};
 }
 
@@ -285,88 +314,131 @@ int mlp_save(const MLP* net, const char* path) {
 
   fwrite(&net->out_temp, sizeof(double), 1, f);
 
-  size_t act_count = 0;
-  size_t bias_count = 0;
-  size_t weight_count = 0;
+  size_t act_count = 0;     // Total activations across all layers
+  size_t bias_count = 0;    // Total biases (layers 1..nb_layers-1)
+  size_t weight_count = 0;  // Total weights (layers 1..nb_layers-1)
 
-  for (unsigned l = 0; l < net->nb_layers; ++l) {
+  for (size_t l = 0; l < net->nb_layers; ++l) {
     act_count += net->sizes[l];
-
     if (l > 0) {
       bias_count += net->sizes[l];
-
-      weight_count += net->sizes[l] * NB_ENTRY;
+      weight_count += net->sizes[l] * (size_t)NB_ENTRY;
     }
   }
 
-  size_t data_count = 3 * act_count + bias_count + weight_count;
+  fwrite(net->a[0], sizeof(double), act_count, f);
+  fwrite(net->z[0], sizeof(double), act_count, f);
+  fwrite(net->delta[0], sizeof(double), act_count, f);
+  fwrite(net->b[0], sizeof(double), bias_count, f);
 
-  fwrite(&data_count, sizeof(size_t), 1, f);
-
-  fwrite(net->data_block, sizeof(double), data_count, f);
-
-  fwrite(&weight_count, sizeof(size_t), 1, f);
-
-  fwrite(net->idx_block, sizeof(int), weight_count, f);
+  fwrite(net->W[0][0], sizeof(double), weight_count, f);
+  fwrite(net->M[0][0], sizeof(double), weight_count, f);
+  fwrite(net->V[0][0], sizeof(double), weight_count, f);
+  fwrite(net->I[0][0], sizeof(int), weight_count, f);
 
   fclose(f);
   return 1;
 }
 
 MLP mlp_load(const char* path) {
-  FILE* f = fopen(path, "rb");
+  if (!path) return (MLP){0};
 
+  FILE* f = fopen(path, "rb");
   if (!f) return (MLP){0};
 
-  uint32_t magic;
-  uint32_t version;
+  uint32_t magic = 0;
+  uint32_t version = 0;
 
-  fread(&magic, sizeof(magic), 1, f);
+  // 1. Validate header
+  if (fread(&magic, sizeof(magic), 1, f) != 1 || fread(&version, sizeof(version), 1, f) != 1) {
+    fclose(f);
 
-  fread(&version, sizeof(version), 1, f);
+    printf("error unvalid file.\n");
+    return (MLP){0};
+  }
 
   if (magic != 0x4D4C5031 || version != 1) {
     fclose(f);
+    printf("error unvalid vertion.\n");
     return (MLP){0};
   }
 
-  size_t nb_layers;
-
-  fread(&nb_layers, sizeof(size_t), 1, f);
+  // 2. Read layer count and sizes array
+  size_t nb_layers = 0;
+  if (fread(&nb_layers, sizeof(size_t), 1, f) != 1 || nb_layers == 0) {
+    fclose(f);
+    printf("error while reading layers data.\n");
+    return (MLP){0};
+  }
 
   size_t* sizes = malloc(nb_layers * sizeof(size_t));
-
-  fread(sizes, sizeof(size_t), nb_layers, f);
-
-  double weights_temp;
-  double out_temp;
-
-  fread(&weights_temp, sizeof(double), 1, f);
-
-  fread(&out_temp, sizeof(double), 1, f);
-
-  MLP net = mlp_create(nb_layers, sizes, weights_temp, out_temp);
-
-  free(sizes);
-
-  if (!net.meta_block) {
+  if (!sizes) {
     fclose(f);
+    printf("error while allocating layers data.\n");
     return (MLP){0};
   }
 
-  size_t data_count;
+  if (fread(sizes, sizeof(size_t), nb_layers, f) != nb_layers) {
+    free(sizes);
+    fclose(f);
+    printf("error while reading layers data.\n");
+    return (MLP){0};
+  }
 
-  fread(&data_count, sizeof(size_t), 1, f);
+  // 3. Read hyperparameters / temporary settings
+  double weights_temp = 0.0;
+  double out_temp = 0.0;
+  if (fread(&weights_temp, sizeof(double), 1, f) != 1 ||
+      fread(&out_temp, sizeof(double), 1, f) != 1) {
+    free(sizes);
+    fclose(f);
+    printf("error while reading temperatures data.\n");
+    return (MLP){0};
+  }
 
-  fread(net.data_block, sizeof(double), data_count, f);
+  // 4. Allocate the network structure using your creation function
+  MLP net = mlp_create(nb_layers, sizes, weights_temp, out_temp);
+  free(sizes);  // Safe to free temporary sizes buffer now
 
-  size_t weight_count;
+  if (!net.sizes) {
+    fclose(f);
+    printf("error allocating data.\n");
+    return (MLP){0};
+  }
 
-  fread(&weight_count, sizeof(size_t), 1, f);
+  // 5. Compute total counts matching mlp_save
+  size_t act_count = 0;     // Total activations across all layers
+  size_t bias_count = 0;    // Total biases (layers 1..nb_layers-1)
+  size_t weight_count = 0;  // Total weights (layers 1..nb_layers-1)
 
-  fread(net.idx_block, sizeof(int), weight_count, f);
+  for (size_t l = 0; l < net.nb_layers; ++l) {
+    act_count += net.sizes[l];
+    if (l > 0) {
+      bias_count += net.sizes[l];
+      weight_count += net.sizes[l] * (size_t)NB_ENTRY;
+    }
+  }
+
+  // 6. Read bulk buffers with strict return-value validation
+  int read_ok = 1;
+  read_ok = read_ok && (fread(net.a[0], sizeof(double), act_count, f) == act_count);
+  read_ok = read_ok && (fread(net.z[0], sizeof(double), act_count, f) == act_count);
+  read_ok = read_ok && (fread(net.delta[0], sizeof(double), act_count, f) == act_count);
+  read_ok = read_ok && (fread(net.b[0], sizeof(double), bias_count, f) == bias_count);
+
+  read_ok = read_ok && (fread(net.W[0][0], sizeof(double), weight_count, f) == weight_count);
+  read_ok = read_ok && (fread(net.M[0][0], sizeof(double), weight_count, f) == weight_count);
+  read_ok = read_ok && (fread(net.V[0][0], sizeof(double), weight_count, f) == weight_count);
+  read_ok = read_ok && (fread(net.I[0][0], sizeof(int), weight_count, f) == weight_count);
 
   fclose(f);
+
+  if (!read_ok) {
+    // If any bulk read failed, you should free the network memory
+    // to prevent leaks (e.g., calling mlp_free(&net) if you have a free function).
+    printf("error while reading data.\n");
+    return (MLP){0};
+  }
 
   return net;
 }

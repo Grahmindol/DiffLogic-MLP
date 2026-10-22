@@ -498,7 +498,7 @@ static void init(void) {
   LOG_INFO("Initialising MLP...");
   srand((unsigned)time(NULL));
   net = mlp_create(nb_layers, layers, INIT_WTEMP, INIT_OTEMP);
-  if (!net.meta_block || !net.data_block) {
+  if (!net.sizes) {
     LOG_ERROR("Memory allocation failed");
   }
   LOG_SUCCESS("MLP Initialised !");

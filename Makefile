@@ -5,14 +5,16 @@ CXX := gcc
 DEBUG ?= 0
 
 ifeq ($(DEBUG),1)
-	CXXFLAGS := -g -O0
+	CXXFLAGS := -g -O0 -fsanitize=address 
+	LDFLAGS := -fsanitize=address
 else
 	CXXFLAGS := -s -O3 -march=native -ffast-math
+	LDFLAGS :=
 endif
 
 CXXFLAGS += -Wall -Wextra -std=c99 -Iheaders -MMD -MP -fopenmp
 
-LDFLAGS := -lm -lglut -lGLU -lGL -fopenmp
+LDFLAGS += -lm -lglut -lGLU -lGL -fopenmp 
 
 BUILD_DIR := build
 OBJ_DIR   := $(BUILD_DIR)/obj

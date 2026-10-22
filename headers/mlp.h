@@ -18,11 +18,9 @@ typedef struct {
   double** b;
 
   double*** W;  // poids [l][j][k]
+  double*** M;  // first momentum [l][j][k]
+  double*** V;  // second momentum [l][j][k]
   int*** I;     // index d'entrée [l][j][k]
-
-  void* meta_block;
-  double* data_block;
-  int* idx_block;
 
   double weights_temp;
   double out_temp;
